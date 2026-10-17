@@ -1,0 +1,299 @@
+
+/* ==========================================
+   THE TRUST JUGGLER — COMPLETE UI REDESIGN
+   ========================================== */
+
+:root {
+    --bg: #0b1020;
+    --panel: #121a2d;
+    --panel-hover: #19233a;
+    --primary: #8b5cf6;
+    --primary-hover: #a78bfa;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --border: #27334c;
+    --green: #34d399;
+    --red: #fb7185;
+    --gold: #fbbf24;
+}
+
+/* Main application background */
+.stApp {
+    background: var(--bg) !important;
+    color: var(--text) !important;
+}
+
+[data-testid="stAppViewContainer"] {
+    background: var(--bg) !important;
+}
+
+[data-testid="stHeader"] {
+    background: rgba(11, 16, 32, 0.95) !important;
+}
+
+[data-testid="stMain"] {
+    background: var(--bg) !important;
+}
+
+/* Main content spacing */
+.main .block-container {
+    max-width: 1450px;
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background: var(--panel) !important;
+    border-right: 1px solid var(--border);
+}
+
+[data-testid="stSidebar"] > div {
+    background: var(--panel) !important;
+}
+
+[data-testid="stSidebar"] * {
+    color: var(--text);
+}
+
+/* Typography */
+h1, h2, h3, h4 {
+    color: var(--text) !important;
+    letter-spacing: -0.6px;
+}
+
+h1 {
+    font-size: 2.35rem !important;
+    font-weight: 750 !important;
+}
+
+h2 {
+    font-size: 1.7rem !important;
+    font-weight: 700 !important;
+}
+
+h3 {
+    font-size: 1.15rem !important;
+    font-weight: 650 !important;
+}
+
+p, li, label, [data-testid="stMarkdownContainer"] {
+    color: var(--text);
+}
+
+[data-testid="stCaptionContainer"],
+.stCaption {
+    color: var(--muted) !important;
+}
+
+/* Metric cards */
+[data-testid="stMetric"] {
+    background: linear-gradient(
+        145deg,
+        #17213a,
+        #121a2d
+    ) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 16px !important;
+    padding: 22px !important;
+    min-height: 125px;
+    transition: border-color 0.2s ease,
+                transform 0.2s ease;
+}
+
+[data-testid="stMetric"]:hover {
+    border-color: var(--primary) !important;
+    transform: translateY(-2px);
+}
+
+[data-testid="stMetricLabel"] {
+    color: var(--muted) !important;
+}
+
+[data-testid="stMetricValue"] {
+    color: var(--text) !important;
+    font-size: 2rem !important;
+    font-weight: 750 !important;
+}
+
+[data-testid="stMetricDelta"] {
+    color: var(--green) !important;
+}
+
+/* Buttons */
+.stButton > button,
+.stFormSubmitButton > button,
+[data-testid="stDownloadButton"] > button {
+    background: var(--primary) !important;
+    color: #ffffff !important;
+    border: 1px solid transparent !important;
+    border-radius: 10px !important;
+    padding: 0.55rem 1.15rem !important;
+    font-weight: 650 !important;
+    transition: all 0.2s ease !important;
+}
+
+.stButton > button:hover,
+.stFormSubmitButton > button:hover,
+[data-testid="stDownloadButton"] > button:hover {
+    background: var(--primary-hover) !important;
+    color: #0b1020 !important;
+    border-color: var(--primary-hover) !important;
+}
+
+/* Input fields */
+.stTextInput input,
+.stTextArea textarea,
+.stNumberInput input {
+    background: #0e1628 !important;
+    color: var(--text) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 9px !important;
+}
+
+.stTextInput input:focus,
+.stTextArea textarea:focus,
+.stNumberInput input:focus {
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 1px var(--primary) !important;
+}
+
+/* Dropdowns */
+[data-baseweb="select"] > div {
+    background: #0e1628 !important;
+    border-color: var(--border) !important;
+    border-radius: 9px !important;
+}
+
+[data-baseweb="select"] * {
+    color: var(--text) !important;
+}
+
+/* Dropdown menu */
+[data-baseweb="popover"],
+[data-baseweb="menu"] {
+    background: var(--panel) !important;
+}
+
+[role="option"] {
+    background: var(--panel) !important;
+    color: var(--text) !important;
+}
+
+[role="option"]:hover {
+    background: var(--panel-hover) !important;
+}
+
+/* Forms and containers */
+[data-testid="stForm"] {
+    background: var(--panel) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 16px !important;
+    padding: 24px !important;
+}
+
+/* Tables */
+[data-testid="stDataFrame"],
+[data-testid="stTable"] {
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    overflow: hidden;
+}
+
+[data-testid="stDataFrame"] * {
+    border-color: var(--border);
+}
+
+/* Alerts and messages */
+[data-testid="stAlert"] {
+    border-radius: 12px !important;
+}
+
+/* Dividers */
+hr {
+    border-color: var(--border) !important;
+}
+
+/* Radio buttons */
+[data-testid="stRadio"] label {
+    color: var(--text) !important;
+}
+
+/* Checkboxes */
+[data-testid="stCheckbox"] label {
+    color: var(--text) !important;
+}
+
+/* Expanders */
+[data-testid="stExpander"] {
+    background: var(--panel) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+}
+
+/* Header branding */
+.app-header {
+    padding: 12px 0 22px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 22px;
+}
+
+.app-brand {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.brand-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    background: #21183c;
+    border: 1px solid #51368b;
+    border-radius: 16px;
+    font-size: 28px;
+}
+
+.app-brand h1 {
+    margin: 0 !important;
+    font-size: 1.9rem !important;
+}
+
+.app-brand p {
+    margin: 4px 0 0;
+    color: var(--muted) !important;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 2px;
+}
+
+/* Sidebar navigation */
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    padding: 7px 5px;
+}
+
+/* Hide Streamlit branding */
+#MainMenu {
+    visibility: hidden;
+}
+
+footer {
+    visibility: hidden;
+}
+
+/* Responsive layout */
+@media (max-width: 768px) {
+    .main .block-container {
+        padding: 1rem;
+    }
+
+    h1 {
+        font-size: 1.8rem !important;
+    }
+
+    [data-testid="stMetric"] {
+        padding: 15px !important;
+    }
+}
