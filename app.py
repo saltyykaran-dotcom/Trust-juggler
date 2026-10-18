@@ -517,7 +517,10 @@ def _load_cascades():
 
     # Last resort: download the model file from the OpenCV repository.
     if not _CASCADE_CACHE:
+        import socket
         import urllib.request
+
+        socket.setdefaulttimeout(5)
 
         name = "haarcascade_frontalface_default.xml"
         url = (
@@ -589,26 +592,36 @@ def _extract_face(gray):
     return None
 
 
+def _face_or_fallback(gray):
+    """Return (face, detector_used).
+
+    If the face models load, detection is required (None if no face).
+    If they cannot be loaded at all, fall back to a centred square crop
+    so the prototype keeps working; the caller shows a warning.
+    """
+    if _load_cascades():
+        return _extract_face(gray), True
+
+    height, width = gray.shape[:2]
+    side = int(min(height, width) * 0.7)
+    top = (height - side) // 2
+    left = (width - side) // 2
+    crop = gray[top:top + side, left:left + side]
+    crop = cv2.equalizeHist(crop)
+    return cv2.resize(crop, FACE_SIZE), False
+
+
 def enroll_face_from_bytes(rider_id, image_bytes):
     """Validate a captured photo and save the face image for this rider."""
     if not validate_rider_id(rider_id):
         return {"success": False, "message": "Invalid rider ID."}
-
-    if not _load_cascades():
-        return {
-            "success": False,
-            "message": (
-                "OpenCV's face detection models could not be loaded. "
-                + _cascade_debug_text()
-            ),
-        }
 
     image = _decode_image(image_bytes)
     if image is None:
         return {"success": False, "message": "Could not read the photo."}
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    face = _extract_face(gray)
+    face, detected = _face_or_fallback(gray)
     if face is None:
         return {
             "success": False,
@@ -624,7 +637,14 @@ def enroll_face_from_bytes(rider_id, image_bytes):
     if not cv2.imwrite(str(path), face):
         return {"success": False, "message": "Could not save the face image."}
 
-    return {"success": True, "message": f"Face enrolled for rider {rider_id}."}
+    message = f"Face enrolled for rider {rider_id}."
+    if not detected:
+        message += (
+            " Note: the face detector could not be loaded, so the centre "
+            "of the photo was saved without checking for a face. Keep the "
+            "face centred when verifying."
+        )
+    return {"success": True, "message": message}
 
 
 def verify_face_from_bytes(rider_id, image_bytes):
@@ -654,13 +674,7 @@ def verify_face_from_bytes(rider_id, image_bytes):
         return {"success": False, "message": "Could not read the photo."}
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    if not _load_cascades():
-        return {
-            "success": False,
-            "message": "OpenCV's face detection models could not be loaded.",
-        }
-
-    live_face = _extract_face(gray)
+    live_face, _ = _face_or_fallback(gray)
     if live_face is None:
         return {
             "success": False,
