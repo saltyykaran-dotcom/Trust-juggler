@@ -6,6 +6,86 @@ from pathlib import Path
 
 import streamlit as st
 
+# --------------------------------------------------
+# Authentication & Session Management
+# --------------------------------------------------
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+    st.session_state["user_type"] = None  # "admin" or "rider"
+    st.session_state["user_id"] = None
+
+def show_login():
+    # Professional centered login page
+    # Custom CSS for login container
+    login_css = """
+    <style>
+        .login-container {
+            max-width: 400px;
+            margin: auto;
+            padding: 40px;
+            background: var(--panel);
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .login-container h2 {
+            color: var(--gold);
+            text-align: center;
+            margin-bottom: 24px;
+        }
+        .login-container .stButton > button {
+            width: 100%;
+        }
+    </style>
+    """
+    st.markdown(login_css, unsafe_allow_html=True)
+    st.markdown("""
+    <div class='login-container'>
+        <h2>🔐 Trust Juggler Login</h2>
+    </div>
+    """, unsafe_allow_html=True)
+    login_type = st.radio("Login as", ("Rider", "Admin"))
+    if login_type == "Rider":
+        rider_id = st.text_input("Rider ID")
+        if st.button("Login"):
+            from database import get_riders
+            riders = get_riders()
+            if any(r["rider_id"] == rider_id for r in riders):
+                st.session_state["logged_in"] = True
+                st.session_state["user_type"] = "rider"
+                st.session_state["user_id"] = rider_id
+                st.success("Rider logged in")
+                st.rerun()
+            else:
+                st.error("Rider not found")
+    else:
+        password = st.text_input("Admin password", type="password")
+        if st.button("Login"):
+            if password == "admin123":
+                st.session_state["logged_in"] = True
+                st.session_state["user_type"] = "admin"
+                st.session_state["user_id"] = "admin"
+                st.success("Admin logged in")
+                st.rerun()
+            else:
+                st.error("Invalid admin password")
+
+# Show login page if not authenticated
+if not st.session_state.get("logged_in"):
+    show_login()
+    st.stop()
+
+# Sidebar logout button (visible only when logged in)
+st.sidebar.markdown("---")
+if st.session_state.get("logged_in"):
+    if st.sidebar.button("Logout"):
+        for key in ["logged_in", "user_type", "user_id"]:
+            st.session_state.pop(key, None)
+        st.rerun()
+
+# --------------------------------------------------
+# PAGE NAVIGATION (unchanged below)
+# --------------------------------------------------
+
 from database import (
     initialize_database,
     add_rider,
@@ -17,7 +97,7 @@ from database import (
     resolve_security_alert,
 )
 
-from risk_engine import calculate_risk
+from risk_engine import calculate_risk, compute_score
 from face_verification import (
     enroll_face,
     verify_face,
@@ -46,6 +126,10 @@ PAGES = [
     "Risk Assessment",
     "Admin Dashboard",
 ]
+
+# Restrict admin dashboard view to admin users
+if st.session_state.get("user_type") != "admin":
+    PAGES = [page for page in PAGES if page != "Admin Dashboard"]
 
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Home"
@@ -525,6 +609,22 @@ if page == "Home":
         ("VERIFICATION / RISK LOGS", len(logs)),
         ("UNRESOLVED ALERTS", len(unresolved_alerts)),
     ])
+
+    # Display continuous behavioral score for each rider
+    if riders:
+        score_rows = []
+        for rider in riders:
+            rider_id = get_rider_id(rider)
+            score_info = compute_score(rider_id)
+            score_rows.append({
+                "Rider ID": rider_id,
+                "Base Score": score_info.get("base_score"),
+                "Hand‑off Penalty": score_info.get("hand_off"),
+                "Total Score": score_info.get("total"),
+                "Level": score_info.get("level"),
+            })
+        st.subheader("Behavioral Scores")
+        st.dataframe(score_rows, use_container_width=True, hide_index=True)
 
     st.markdown("")
     left, right = st.columns(2)
@@ -1079,21 +1179,34 @@ elif page == "Admin Dashboard":
     section_heading("Registered riders")
 
     if riders:
+        # Rider details table
         st.dataframe(
             [
                 {
                     "Rider ID": get_rider_id(rider),
                     "Full Name": get_rider_name(rider),
                     "Email": get_rider_email(rider),
-                    "Face Enrolled": has_enrolled_face(
-                        get_rider_id(rider)
-                    ),
+                    "Face Enrolled": has_enrolled_face(get_rider_id(rider)),
                 }
                 for rider in riders
             ],
             use_container_width=True,
             hide_index=True,
         )
+        # Behavioral scores table
+        score_rows = []
+        for rider in riders:
+            rider_id = get_rider_id(rider)
+            score = compute_score(rider_id)
+            score_rows.append({
+                "Rider ID": rider_id,
+                "Base Score": score.get("base_score"),
+                "Hand‑off Penalty": score.get("hand_off"),
+                "Total Score": score.get("total"),
+                "Level": score.get("level"),
+            })
+        st.subheader("Behavioral Scores")
+        st.dataframe(score_rows, use_container_width=True, hide_index=True)
     else:
         st.info("No registered riders found.")
 
