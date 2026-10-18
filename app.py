@@ -1,10 +1,19 @@
-
 import re
 import csv
 import io
 from pathlib import Path
 
+import numpy as np
+import cv2
 import streamlit as st
+
+# set_page_config should be the first Streamlit command
+st.set_page_config(
+    page_title="Trust Juggler",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 # --------------------------------------------------
 # Authentication & Session Management
@@ -98,26 +107,22 @@ from database import (
 )
 
 from risk_engine import calculate_risk, compute_score
-from face_verification import (
-    enroll_face,
-    verify_face,
-    validate_rider_id,
-)
+from face_verification import validate_rider_id
 
 # =========================================================
 # INITIALIZATION
 # =========================================================
 
-st.set_page_config(
-    page_title="Trust Juggler",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 initialize_database()
 
 FACE_DIR = Path(__file__).parent / "face_data"
+FACE_DIR.mkdir(parents=True, exist_ok=True)
+
+# LBPH distance threshold: lower distance = closer match.
+# Set this to the same value your old face_verification.py used.
+VERIFY_THRESHOLD = 80.0
+
+FACE_SIZE = (200, 200)
 
 PAGES = [
     "Home",
@@ -440,6 +445,249 @@ def safe_get_data(function, label):
         return []
 
 
+# ---------------------------------------------------------
+# Browser-camera face helpers (replace the OpenCV window)
+# ---------------------------------------------------------
+
+def _decode_image(image_bytes):
+    """Decode raw image bytes (from st.camera_input) to a BGR array."""
+    array = np.frombuffer(image_bytes, np.uint8)
+    return cv2.imdecode(array, cv2.IMREAD_COLOR)
+
+
+_CASCADE_CACHE = []
+_CASCADE_DEBUG = []
+
+
+def _cascade_search_dirs():
+    dirs = []
+    try:
+        dirs.append(Path(cv2.data.haarcascades))
+    except AttributeError:
+        pass
+    cv2_dir = Path(cv2.__file__).parent
+    dirs.append(cv2_dir / "data")
+    dirs.append(cv2_dir.parent / "cv2" / "data")
+    dirs.append(Path(__file__).parent / "models")
+    return [d for d in dirs if d.is_dir()]
+
+
+def _load_cascades():
+    """Load Haar face models. Retries via a safe ASCII path if needed."""
+    if _CASCADE_CACHE:
+        return _CASCADE_CACHE
+
+    safe_dirs = [
+        Path(__file__).parent / "models_cache",
+        Path.home() / ".trust_juggler_models",
+        Path("C:/tj_models") if Path("C:/").exists() else Path("/tmp/tj_models"),
+    ]
+
+    for name in (
+        "haarcascade_frontalface_default.xml",
+        "haarcascade_frontalface_alt2.xml",
+        "haarcascade_frontalface_alt.xml",
+    ):
+        source = None
+        for directory in _cascade_search_dirs():
+            if (directory / name).is_file():
+                source = directory / name
+                break
+        if source is None:
+            continue
+
+        cascade = cv2.CascadeClassifier(str(source))
+
+        # OpenCV often cannot open files under non-ASCII paths
+        # (e.g. a Windows username with special characters).
+        if cascade.empty():
+            for safe in safe_dirs:
+                try:
+                    safe.mkdir(parents=True, exist_ok=True)
+                    target = safe / name
+                    target.write_bytes(source.read_bytes())
+                    cascade = cv2.CascadeClassifier(str(target))
+                    if not cascade.empty():
+                        break
+                except Exception:
+                    continue
+
+        if not cascade.empty():
+            _CASCADE_CACHE.append(cascade)
+
+    # Last resort: download the model file from the OpenCV repository.
+    if not _CASCADE_CACHE:
+        import urllib.request
+
+        name = "haarcascade_frontalface_default.xml"
+        url = (
+            "https://raw.githubusercontent.com/opencv/opencv/4.x/"
+            "data/haarcascades/" + name
+        )
+        targets = [Path(__file__).parent / "models"] + safe_dirs
+        for directory in targets:
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                target = directory / name
+                if not target.is_file() or target.stat().st_size < 1000:
+                    urllib.request.urlretrieve(url, str(target))
+                cascade = cv2.CascadeClassifier(str(target))
+                if not cascade.empty():
+                    _CASCADE_CACHE.append(cascade)
+                    break
+                _CASCADE_DEBUG.append(f"Loaded file but empty: {target}")
+            except Exception as error:
+                _CASCADE_DEBUG.append(f"{directory}: {error}")
+
+    return _CASCADE_CACHE
+
+
+def _cascade_debug_text():
+    try:
+        data_dir = cv2.data.haarcascades
+    except AttributeError:
+        data_dir = "cv2.data not available"
+    searched = ", ".join(str(d) for d in _cascade_search_dirs()) or "none"
+    return (
+        f"OpenCV {cv2.__version__}; data dir: {data_dir}; "
+        f"searched: {searched}; "
+        f"details: {' | '.join(_CASCADE_DEBUG) or 'none'}"
+    )
+
+
+def _extract_face(gray):
+    """Return a cropped, resized grayscale face, or None if not exactly one."""
+    cascades = _load_cascades()
+    if not cascades:
+        return None
+
+    # Try raw, histogram-equalised and CLAHE versions of the image,
+    # since lighting is the most common reason detection fails.
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    variants = [gray, cv2.equalizeHist(gray), clahe.apply(gray)]
+
+    for variant in variants:
+        for cascade in cascades:
+            for scale, neighbors, min_size in (
+                (1.1, 5, (60, 60)),
+                (1.05, 4, (50, 50)),
+                (1.05, 3, (40, 40)),
+            ):
+                faces = cascade.detectMultiScale(
+                    variant,
+                    scaleFactor=scale,
+                    minNeighbors=neighbors,
+                    minSize=min_size,
+                )
+                if len(faces) > 0:
+                    # Use the largest face if several are detected.
+                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                    return cv2.resize(
+                        variant[y:y + h, x:x + w], FACE_SIZE
+                    )
+
+    return None
+
+
+def enroll_face_from_bytes(rider_id, image_bytes):
+    """Validate a captured photo and save the face image for this rider."""
+    if not validate_rider_id(rider_id):
+        return {"success": False, "message": "Invalid rider ID."}
+
+    if not _load_cascades():
+        return {
+            "success": False,
+            "message": (
+                "OpenCV's face detection models could not be loaded. "
+                + _cascade_debug_text()
+            ),
+        }
+
+    image = _decode_image(image_bytes)
+    if image is None:
+        return {"success": False, "message": "Could not read the photo."}
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    face = _extract_face(gray)
+    if face is None:
+        return {
+            "success": False,
+            "message": (
+                "No face was detected in the photo. Face the camera "
+                "directly, keep your whole face in frame, remove glasses "
+                "or a cap if possible, and make sure light falls on your "
+                "face rather than behind you."
+            ),
+        }
+
+    path = FACE_DIR / f"{rider_id}.jpg"
+    if not cv2.imwrite(str(path), face):
+        return {"success": False, "message": "Could not save the face image."}
+
+    return {"success": True, "message": f"Face enrolled for rider {rider_id}."}
+
+
+def verify_face_from_bytes(rider_id, image_bytes):
+    """Compare a captured photo with the enrolled face using LBPH."""
+    if not hasattr(cv2, "face"):
+        return {
+            "success": False,
+            "message": (
+                "OpenCV face module missing. Install it with: "
+                "pip install opencv-contrib-python"
+            ),
+        }
+
+    if not validate_rider_id(rider_id) or not has_enrolled_face(rider_id):
+        return {"success": False, "message": "No enrolled face for this rider."}
+
+    stored = cv2.imread(str(FACE_DIR / f"{rider_id}.jpg"), cv2.IMREAD_GRAYSCALE)
+    if stored is None:
+        return {"success": False, "message": "Could not read the enrolled image."}
+    # Older enrollments may be full frames; crop if a face is found.
+    stored_face = _extract_face(stored)
+    if stored_face is None:
+        stored_face = cv2.resize(stored, FACE_SIZE)
+
+    image = _decode_image(image_bytes)
+    if image is None:
+        return {"success": False, "message": "Could not read the photo."}
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if not _load_cascades():
+        return {
+            "success": False,
+            "message": "OpenCV's face detection models could not be loaded.",
+        }
+
+    live_face = _extract_face(gray)
+    if live_face is None:
+        return {
+            "success": False,
+            "message": (
+                "No face was detected in the photo. Face the camera "
+                "directly, keep your whole face in frame, and make sure "
+                "light falls on your face."
+            ),
+        }
+
+    recognizer = cv2.face.LBPHFaceRecognizer_create()
+    recognizer.train([stored_face], np.array([0]))
+    _, distance = recognizer.predict(live_face)
+
+    verified = distance <= VERIFY_THRESHOLD
+    return {
+        "success": True,
+        "verified": verified,
+        "distance": float(distance),
+        "message": (
+            "Face is similar to the enrolled image."
+            if verified
+            else "Face is not similar enough to the enrolled image."
+        ),
+    }
+
+
 def save_risk_assessment(rider_id, result):
     details = "; ".join(result["reasons"])
     details = (
@@ -600,9 +848,9 @@ if page == "Home":
     alerts = safe_get_data(get_security_alerts, "security alerts")
 
     unresolved_alerts = [
-    alert for alert in alerts
-    if str(alert["resolved"] if "resolved" in alert.keys() else 0) == "0"
-]
+        alert for alert in alerts
+        if str(alert["resolved"] if "resolved" in alert.keys() else 0) == "0"
+    ]
 
     show_metrics([
         ("REGISTERED RIDERS", len(riders)),
@@ -655,7 +903,7 @@ if page == "Home":
                 <div class="eyebrow">02 · BIOMETRIC CHECK</div>
                 <div class="panel-title">Face Verification</div>
                 <p class="muted">
-                    Compare a live webcam image with an enrolled face image.
+                    Compare a live camera photo with an enrolled face image.
                 </p>
             </div>
             """,
@@ -777,6 +1025,10 @@ elif page == "Rider Registration":
         )
         selected_id = rider_options[selected_label]
 
+        flash = st.session_state.pop("enroll_flash", None)
+        if flash:
+            st.success(flash)
+
         if has_enrolled_face(selected_id):
             st.success("A face image is already enrolled for this rider.")
             st.caption(
@@ -791,18 +1043,32 @@ elif page == "Rider Registration":
             key="face_enrollment_consent",
         )
 
+        if "enroll_cam_n" not in st.session_state:
+            st.session_state["enroll_cam_n"] = 0
+
+        photo = None
+        if consent:
+            st.caption(
+                "Allow camera access in your browser when prompted, "
+                "face the camera in good light, then take the photo."
+            )
+            photo = st.camera_input(
+                "Take a photo to enroll",
+                key=f"enroll_cam_{selected_id}_"
+                    f"{st.session_state['enroll_cam_n']}",
+            )
+
         if st.button(
-            "Open Webcam and Enroll Face",
-            disabled=not consent,
+            "Enroll Captured Face",
+            disabled=not (consent and photo is not None),
             use_container_width=True,
         ):
-            with st.spinner(
-                "Opening webcam. Follow the instructions in its window..."
-            ):
-                enrollment = enroll_face(selected_id)
+            with st.spinner("Processing photo..."):
+                enrollment = enroll_face_from_bytes(
+                    selected_id, photo.getvalue()
+                )
 
             if enrollment.get("success"):
-                st.success(enrollment["message"])
                 try:
                     add_verification_log(
                         rider_id=selected_id,
@@ -815,6 +1081,9 @@ elif page == "Rider Registration":
                     st.warning(
                         f"Image saved, but enrollment logging failed: {error}"
                     )
+                st.session_state["enroll_flash"] = enrollment["message"]
+                st.session_state["enroll_cam_n"] += 1
+                st.rerun()
             else:
                 st.error(enrollment.get("message", "Enrollment failed."))
 
@@ -850,7 +1119,7 @@ elif page == "Rider Registration":
 elif page == "Verification":
     page_heading(
         "Identity Verification",
-        "Compare a live webcam image with the enrolled face image.",
+        "Compare a live camera photo with the enrolled face image.",
     )
 
     riders = safe_get_data(get_riders, "registered riders")
@@ -886,9 +1155,8 @@ elif page == "Verification":
                 <div class="panel-title">Before you begin</div>
                 <p class="muted">
                     Obtain the rider's consent for this verification attempt.
-                    The webcam opens in a separate window on the computer
-                    running this application. Press S to accept the displayed
-                    comparison result or Q to cancel.
+                    Your browser will ask for camera access. Take a photo
+                    facing the camera, then press Start Face Verification.
                 </p>
             </div>
             """,
@@ -900,18 +1168,26 @@ elif page == "Verification":
             key="face_verification_consent",
         )
 
+        verify_photo = None
+        if verification_consent and has_enrolled_face(selected_id):
+            verify_photo = st.camera_input(
+                "Take a photo to verify",
+                key=f"verify_cam_{selected_id}",
+            )
+
         if st.button(
             "Start Face Verification",
             disabled=(
                 not verification_consent
                 or not has_enrolled_face(selected_id)
+                or verify_photo is None
             ),
             use_container_width=True,
         ):
-            with st.spinner(
-                "Opening webcam. Complete the process in the webcam window..."
-            ):
-                result = verify_face(selected_id)
+            with st.spinner("Comparing faces..."):
+                result = verify_face_from_bytes(
+                    selected_id, verify_photo.getvalue()
+                )
 
             st.session_state["last_face_verification"] = {
                 "rider_id": selected_id,
@@ -924,7 +1200,7 @@ elif page == "Verification":
                 st.error(f"Could not save the verification log: {error}")
 
             # A completed, unsuccessful comparison is a failed attempt.
-            # A cancelled attempt or camera error is not counted as a mismatch.
+            # A camera or detection error is not counted as a mismatch.
             if result.get("success") and not result.get("verified"):
                 try:
                     risk_result = calculate_risk(

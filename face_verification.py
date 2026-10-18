@@ -2,13 +2,104 @@
 import cv2
 import numpy as np
 from pathlib import Path
+import time
 
 # --------------------------------------------------
 # CONFIGURATION
 # --------------------------------------------------
 
-FACE_DIR = Path(__file__).parent / "face_data"
+BASE_DIR = Path(__file__).resolve().parent
+FACE_DIR = BASE_DIR / "face_data"
+
 FACE_THRESHOLD = 70
+
+# Optional local copy of the Haar Cascade XML file.
+LOCAL_CASCADE = BASE_DIR / "haarcascade_frontalface_default.xml"
+
+CAMERA_INDEXES = (0, 1, 2)
+CAMERA_BACKENDS = (
+    cv2.CAP_DSHOW,
+    cv2.CAP_MSMF,
+    cv2.CAP_ANY,
+)
+
+
+# --------------------------------------------------
+# WEBCAM INITIALIZATION
+# --------------------------------------------------
+
+def open_camera():
+    """Try multiple Windows camera indexes and backends."""
+
+    for index in CAMERA_INDEXES:
+        for backend in CAMERA_BACKENDS:
+            camera = None
+
+            try:
+                camera = cv2.VideoCapture(index, backend)
+
+                if not camera.isOpened():
+                    camera.release()
+                    continue
+
+                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+                # Read several frames while the camera initializes.
+                for _ in range(10):
+                    success, frame = camera.read()
+
+                    if success and frame is not None and frame.size > 0:
+                        print(
+                            f"Webcam opened: index={index}, "
+                            f"backend={backend}"
+                        )
+                        return camera
+
+                    time.sleep(0.1)
+
+                camera.release()
+
+            except Exception as error:
+                print(
+                    f"Camera attempt failed: index={index}, "
+                    f"backend={backend}: {error}"
+                )
+
+                if camera is not None:
+                    camera.release()
+
+    return None
+
+
+def read_camera_frame(camera):
+    """Read one valid frame from the webcam."""
+
+    try:
+        success, frame = camera.read()
+
+        if success and frame is not None and frame.size > 0:
+            return frame
+
+    except Exception:
+        pass
+
+    return None
+
+
+def close_camera(camera):
+    """Release the webcam and close OpenCV windows."""
+
+    if camera is not None:
+        try:
+            camera.release()
+        except Exception:
+            pass
+
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
 
 
 # --------------------------------------------------
@@ -16,21 +107,61 @@ FACE_THRESHOLD = 70
 # --------------------------------------------------
 
 def get_face_detector():
-    """Load OpenCV's built-in Haar cascade face detector."""
+    """
+    Load the Haar Cascade detector.
 
-    detector = cv2.CascadeClassifier(
-        cv2.data.haarcascades
-        + "haarcascade_frontalface_default.xml"
+    Checks the project folder first, then OpenCV's installed
+    cascade directory. Raises a useful error if neither works.
+    """
+
+    candidates = [
+        LOCAL_CASCADE,
+        Path(cv2.data.haarcascades)
+        / "haarcascade_frontalface_default.xml",
+    ]
+
+    checked_paths = []
+
+    for cascade_path in candidates:
+        cascade_path = Path(cascade_path).resolve()
+
+        # Avoid checking the same file twice.
+        if cascade_path in checked_paths:
+            continue
+
+        checked_paths.append(cascade_path)
+
+        if not cascade_path.is_file():
+            continue
+
+        try:
+            detector = cv2.CascadeClassifier(str(cascade_path))
+
+            if not detector.empty():
+                print(f"Face detector loaded: {cascade_path}")
+                return detector
+
+        except Exception as error:
+            print(f"Could not load {cascade_path}: {error}")
+
+    paths = "\n".join(str(path) for path in checked_paths)
+
+    raise RuntimeError(
+        "Could not load the Haar Cascade face detector.\n"
+        f"OpenCV version: {cv2.__version__}\n"
+        f"Checked paths:\n{paths}\n"
+        "Download haarcascade_frontalface_default.xml from "
+        "the official OpenCV repository and place it beside "
+        "face_verification.py."
     )
 
-    if detector.empty():
-        raise RuntimeError("Could not load the face detector.")
 
-    return detector
-
+# --------------------------------------------------
+# RIDER ID VALIDATION
+# --------------------------------------------------
 
 def validate_rider_id(rider_id):
-    """Allow only safe characters in rider IDs."""
+    """Allow only letters, numbers, underscores and hyphens."""
 
     rider_id = str(rider_id).strip()
 
@@ -47,47 +178,62 @@ def validate_rider_id(rider_id):
 
 
 # --------------------------------------------------
+# FACE DETECTION HELPER
+# --------------------------------------------------
+
+def detect_faces(detector, frame, min_size=(60, 60)):
+    """Return a grayscale frame and detected face coordinates."""
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    faces = detector.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=min_size
+    )
+
+    return gray, faces
+
+
+# --------------------------------------------------
 # BASIC FACE DETECTION
 # --------------------------------------------------
 
 def detect_face():
-    """Open webcam and detect a visible face. Press Q to exit."""
+    """Detect faces through the webcam. Press Q to exit."""
 
-    camera = cv2.VideoCapture(0)
+    camera = open_camera()
 
-    if not camera.isOpened():
+    if camera is None:
         return {
             "success": False,
             "face_detected": False,
-            "message": "Could not open the webcam."
+            "message": (
+                "Could not open the webcam. Check Windows camera "
+                "permissions and close other camera applications."
+            )
         }
+
+    face_detected = False
 
     try:
         detector = get_face_detector()
-        face_detected = False
 
         while True:
-            success, frame = camera.read()
+            frame = read_camera_frame(camera)
 
-            if not success:
+            if frame is None:
                 return {
                     "success": False,
                     "face_detected": False,
-                    "message": "Could not read from the webcam."
+                    "message": "Could not read a frame from the webcam."
                 }
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            faces = detector.detectMultiScale(
-                gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(60, 60)
-            )
-
+            _, faces = detect_faces(detector, frame)
             face_detected = len(faces) > 0
 
-            for (x, y, w, h) in faces:
+            for x, y, w, h in faces:
                 cv2.rectangle(
                     frame,
                     (x, y),
@@ -97,10 +243,10 @@ def detect_face():
                 )
 
             status = (
-                "Face detected"
-                if face_detected
+                "Face detected" if face_detected
                 else "No face detected"
             )
+            color = (0, 200, 0) if face_detected else (0, 0, 255)
 
             cv2.putText(
                 frame,
@@ -108,7 +254,17 @@ def detect_face():
                 (20, 35),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
-                (0, 200, 0) if face_detected else (0, 0, 255),
+                color,
+                2
+            )
+
+            cv2.putText(
+                frame,
+                "Press Q to exit",
+                (20, 70),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
                 2
             )
 
@@ -131,12 +287,11 @@ def detect_face():
         return {
             "success": False,
             "face_detected": False,
-            "message": str(error)
+            "message": f"Face detection failed: {error}"
         }
 
     finally:
-        camera.release()
-        cv2.destroyAllWindows()
+        close_camera(camera)
 
 
 # --------------------------------------------------
@@ -145,9 +300,11 @@ def detect_face():
 
 def enroll_face(rider_id):
     """
-    Capture a face image for an enrolled rider.
+    Capture and store a face image.
 
-    Requires the rider's informed consent.
+    The calling application must obtain informed consent before
+    calling this function.
+
     Press S to save when exactly one face is visible.
     Press Q to cancel.
     """
@@ -159,38 +316,57 @@ def enroll_face(rider_id):
         }
 
     rider_id = str(rider_id).strip()
-    FACE_DIR.mkdir(parents=True, exist_ok=True)
-
     output_path = FACE_DIR / f"{rider_id}.jpg"
-    camera = cv2.VideoCapture(0)
 
-    if not camera.isOpened():
+    if output_path.exists():
         return {
             "success": False,
-            "message": "Could not open the webcam."
+            "message": (
+                "A face image is already enrolled for this rider. "
+                "Use an authorized replacement or deletion workflow "
+                "before enrolling again."
+            )
+        }
+
+    # Load the detector before opening the camera.
+    try:
+        detector = get_face_detector()
+    except Exception as error:
+        return {
+            "success": False,
+            "message": f"Enrollment failed: {error}"
+        }
+
+    camera = open_camera()
+
+    if camera is None:
+        return {
+            "success": False,
+            "message": (
+                "Could not open the webcam. Check Windows camera "
+                "permissions and close other camera applications."
+            )
         }
 
     saved = False
 
     try:
-        detector = get_face_detector()
-
         while True:
-            success, frame = camera.read()
+            frame = read_camera_frame(camera)
 
-            if not success:
-                break
+            if frame is None:
+                return {
+                    "success": False,
+                    "message": "Could not read from the webcam."
+                }
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            faces = detector.detectMultiScale(
-                gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(80, 80)
+            gray, faces = detect_faces(
+                detector,
+                frame,
+                min_size=(80, 80)
             )
 
-            for (x, y, w, h) in faces:
+            for x, y, w, h in faces:
                 cv2.rectangle(
                     frame,
                     (x, y),
@@ -200,18 +376,18 @@ def enroll_face(rider_id):
                 )
 
             if len(faces) == 1:
-                instruction = "Press S to save face"
+                instruction = "Press S to save | Q to cancel"
                 color = (0, 200, 0)
             else:
-                instruction = "Show exactly one face clearly"
+                instruction = "Show exactly one face | Q to cancel"
                 color = (0, 0, 255)
 
             cv2.putText(
                 frame,
                 instruction,
-                (20, 35),
+                (15, 35),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.65,
                 color,
                 2
             )
@@ -224,35 +400,54 @@ def enroll_face(rider_id):
                 x, y, w, h = faces[0]
                 face_crop = gray[y:y + h, x:x + w]
 
+                if face_crop.size == 0:
+                    continue
+
+                FACE_DIR.mkdir(parents=True, exist_ok=True)
+
                 saved = cv2.imwrite(
                     str(output_path),
                     face_crop
                 )
+
+                if not saved:
+                    return {
+                        "success": False,
+                        "message": "Could not save the face image."
+                    }
+
                 break
 
             if key == ord("q"):
                 break
 
+        if saved:
+            return {
+                "success": True,
+                "message": f"Face image saved for rider {rider_id}."
+            }
+
+        return {
+            "success": False,
+            "message": "Enrollment cancelled. No image was saved."
+        }
+
     except Exception as error:
+        # Remove an incomplete image, but preserve a valid saved image.
+        if not saved:
+            try:
+                if output_path.exists() and output_path.stat().st_size == 0:
+                    output_path.unlink()
+            except OSError:
+                pass
+
         return {
             "success": False,
             "message": f"Enrollment failed: {error}"
         }
 
     finally:
-        camera.release()
-        cv2.destroyAllWindows()
-
-    if saved:
-        return {
-            "success": True,
-            "message": f"Face image saved for rider {rider_id}."
-        }
-
-    return {
-        "success": False,
-        "message": "Enrollment cancelled or face could not be saved."
-    }
+        close_camera(camera)
 
 
 # --------------------------------------------------
@@ -261,9 +456,8 @@ def enroll_face(rider_id):
 
 def verify_face(rider_id, threshold=FACE_THRESHOLD):
     """
-    Compare a live face with an enrolled face image using LBPH.
+    Compare a live face against the enrolled image using LBPH.
 
-    Lower LBPH distances indicate a closer image match.
     This is an experimental prototype, not secure authentication.
     """
 
@@ -289,7 +483,7 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
         cv2.IMREAD_GRAYSCALE
     )
 
-    if enrolled_face is None:
+    if enrolled_face is None or enrolled_face.size == 0:
         return {
             "success": False,
             "verified": False,
@@ -297,6 +491,16 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
         }
 
     try:
+        if not hasattr(cv2, "face"):
+            return {
+                "success": False,
+                "verified": False,
+                "message": (
+                    "LBPH is unavailable. Install "
+                    "opencv-contrib-python in the active environment."
+                )
+            }
+
         detector = get_face_detector()
 
         recognizer = cv2.face.LBPHFaceRecognizer_create()
@@ -312,13 +516,16 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
             "message": f"Could not initialize face matching: {error}"
         }
 
-    camera = cv2.VideoCapture(0)
+    camera = open_camera()
 
-    if not camera.isOpened():
+    if camera is None:
         return {
             "success": False,
             "verified": False,
-            "message": "Could not open the webcam."
+            "message": (
+                "Could not open the webcam. Check camera permissions "
+                "and close other camera applications."
+            )
         }
 
     completed = False
@@ -327,18 +534,19 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
 
     try:
         while True:
-            success, frame = camera.read()
+            frame = read_camera_frame(camera)
 
-            if not success:
-                break
+            if frame is None:
+                return {
+                    "success": False,
+                    "verified": False,
+                    "message": "Could not read from the webcam."
+                }
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            faces = detector.detectMultiScale(
-                gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(80, 80)
+            gray, faces = detect_faces(
+                detector,
+                frame,
+                min_size=(80, 80)
             )
 
             status = "Show exactly one face"
@@ -346,8 +554,8 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
 
             if len(faces) == 1:
                 x, y, w, h = faces[0]
-                live_face = gray[y:y + h, x:x + w]
 
+                live_face = gray[y:y + h, x:x + w]
                 live_face = cv2.resize(
                     live_face,
                     (enrolled_face.shape[1], enrolled_face.shape[0])
@@ -356,11 +564,11 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
                 _, distance = recognizer.predict(live_face)
                 best_distance = float(distance)
 
-                if distance <= threshold:
-                    status = f"Possible match: {distance:.1f}"
+                if best_distance <= threshold:
+                    status = f"Possible match: {best_distance:.1f}"
                     color = (0, 200, 0)
                 else:
-                    status = f"No match: {distance:.1f}"
+                    status = f"No match: {best_distance:.1f}"
                     color = (0, 0, 255)
 
                 cv2.rectangle(
@@ -374,7 +582,7 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
             cv2.putText(
                 frame,
                 status,
-                (20, 35),
+                (15, 35),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.65,
                 color,
@@ -384,9 +592,9 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
             cv2.putText(
                 frame,
                 "Press S to accept result | Q to cancel",
-                (20, 70),
+                (15, 70),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
+                0.5,
                 (255, 255, 255),
                 2
             )
@@ -396,12 +604,36 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord("s") and len(faces) == 1:
-                verified = best_distance <= threshold
+                verified = (
+                    best_distance is not None
+                    and best_distance <= threshold
+                )
                 completed = True
                 break
 
             if key == ord("q"):
                 break
+
+        if not completed:
+            return {
+                "success": False,
+                "verified": False,
+                "message": (
+                    "Verification cancelled or no usable face "
+                    "was available."
+                )
+            }
+
+        return {
+            "success": True,
+            "verified": verified,
+            "distance": best_distance,
+            "message": (
+                "Possible face match."
+                if verified
+                else "Face did not meet the matching threshold."
+            )
+        }
 
     except Exception as error:
         return {
@@ -411,26 +643,7 @@ def verify_face(rider_id, threshold=FACE_THRESHOLD):
         }
 
     finally:
-        camera.release()
-        cv2.destroyAllWindows()
-
-    if not completed:
-        return {
-            "success": False,
-            "verified": False,
-            "message": "Verification cancelled or no usable face was available."
-        }
-
-    return {
-        "success": True,
-        "verified": verified,
-        "distance": best_distance,
-        "message": (
-            "Possible face match."
-            if verified
-            else "Face did not meet the matching threshold."
-        )
-    }
+        close_camera(camera)
 
 
 # --------------------------------------------------
@@ -441,7 +654,8 @@ if __name__ == "__main__":
     rider_id = input("Enter the registered rider ID: ").strip()
 
     consent = input(
-        "Has the rider consented to face-image storage? (yes/no): "
+        "Has the rider given informed consent to capture "
+        "and store their face image? (yes/no): "
     ).strip().lower()
 
     if consent == "yes":
