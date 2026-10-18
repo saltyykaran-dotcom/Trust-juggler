@@ -1,5 +1,9 @@
 
+import pytest
+import cv2
 from face_verification import detect_face
+
+@pytest.mark.skipif(not cv2.VideoCapture(0).isOpened(), reason="Webcam not available")
 
 
 def test_face_detection():

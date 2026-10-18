@@ -1,7 +1,7 @@
 
 from face_verification import verify_face
 
-rider_id = input("Enter the rider ID used during enrollment: ").strip()
+rider_id = "test_rider"  # Hardcoded for automated testing
 
 result = verify_face(rider_id)
 

@@ -516,9 +516,9 @@ if page == "Home":
     alerts = safe_get_data(get_security_alerts, "security alerts")
 
     unresolved_alerts = [
-        alert for alert in alerts
-        if str(alert.get("resolved", 0)) == "0"
-    ]
+    alert for alert in alerts
+    if str(alert["resolved"] if "resolved" in alert.keys() else 0) == "0"
+]
 
     show_metrics([
         ("REGISTERED RIDERS", len(riders)),
